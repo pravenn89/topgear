@@ -2,22 +2,19 @@ import streamlit as st
 import pandas as pd
 import gspread
 from datetime import date
-from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Daily Activity Tracker", layout="centered")
 
-# --- 1. GOOGLE SHEETS CONNECTION SETUP ---
+# --- 1. GOOGLE SHEETS CONNECTION SETUP (UPDATED FOR CONCURRENCY) ---
 @st.cache_resource
 def init_connection():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
-    client = gspread.authorize(creds)
+    # This built-in method automatically handles the correct Drive/Sheets scopes
+    # and prevents the 403 API traffic jam when multiple users log in at once.
+    secret_dict = dict(st.secrets["gcp_service_account"])
+    client = gspread.service_account_from_dict(secret_dict)
     return client
 
-# --- 2. FETCH MASTER DATA (With Active Status Filter) ---
+# --- 2. FETCH MASTER DATA ---
 @st.cache_data(ttl=600)
 def get_master_data():
     try:
@@ -28,14 +25,13 @@ def get_master_data():
         tasks_records = sheet.worksheet("Task_Master").get_all_records()
         emp_records = sheet.worksheet("Employee_Master").get_all_records()
         
-        # --- NEW: Filter only Active Employees ---
-        # We use .get('Status', 'Active') so it won't crash if the Status column is missing
+        # Filter only Active Employees
         active_employees = [
             emp for emp in emp_records 
             if str(emp.get('Status', 'Active')).strip().lower() == 'active'
         ]
         
-        # Pulls the Client Name and includes the DIN
+        # Pulls the Client Name and appends the DIN directly from the master list
         clients_list = [f"{row['Client_Name']} (DIN: {row['DIN']})" if row.get('DIN') else row['Client_Name'] for row in clients_records]
         tasks_list = [row['Task_Category'] for row in tasks_records]
         
@@ -43,8 +39,8 @@ def get_master_data():
         return clients_list, tasks_list, active_employees
 
     except Exception as e:
-        st.sidebar.warning("⚠️ Google Sheets Connection Failed. Showing test data.")
-        # Dummy data simulating one active and one inactive employee
+        st.sidebar.warning(f"⚠️ Google Sheets Connection Failed: {e}")
+        # Dummy data for testing the UI if connection drops
         dummy_emps = [
             {"Employee_ID": "EMP01", "Full_Name": "Rahul S.", "Password": "1234", "Status": "Active"}
         ]
@@ -52,7 +48,7 @@ def get_master_data():
 
 clients, tasks, employees = get_master_data()
 
-# The login dropdown will now only contain employees from the filtered 'employees' list
+# Dictionary for mapping Employee "Name (ID)" to their PIN
 emp_dict = {f"{emp['Full_Name']} ({emp['Employee_ID']})": str(emp.get('Password', '1234')) for emp in employees}
 emp_names = list(emp_dict.keys())
 
@@ -92,7 +88,7 @@ if not st.session_state.logged_in:
                 else:
                     st.error("Incorrect Password. Please try again.")
 
-# --- 5. THE MAIN APPLICATION (Only visible if logged in) ---
+# --- 5. THE MAIN APPLICATION ---
 else:
     # --- SIDEBAR: Profile & PIN Management ---
     st.sidebar.write(f"👤 Logged in as: **{st.session_state.current_user}**")
@@ -156,7 +152,7 @@ else:
         st.info("If you need to make corrections, please contact the administrator.")
         
     else:
-        # --- RENDER THE FORM IF NOT SUBMITTED ---
+        # --- SHIFT DETAILS ---
         st.subheader("Shift Details")
 
         hours = [f"{i:02d}" for i in range(1, 13)]
@@ -182,6 +178,7 @@ else:
 
         st.divider()
 
+        # --- DYNAMIC ACTIVITY LOGGING ---
         st.subheader("Activities Performed")
         st.info("💡 **Tip:** You can click the 'Select Client' box and start typing to instantly search.")
 
@@ -244,6 +241,7 @@ else:
                     st.success("✅ All logs submitted successfully to Google Sheets!")
                     st.balloons()
                     
+                    # Refresh to trigger the "Already Submitted" block
                     st.rerun()
                     
                 except Exception as e:
