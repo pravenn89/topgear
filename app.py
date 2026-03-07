@@ -6,23 +6,34 @@ from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Daily Activity Tracker", layout="centered")
 
-# --- 1. GOOGLE SHEETS CONNECTION SETUP ---
+# --- 1. GLOBAL GOOGLE SHEETS CONNECTION ---
+# This caches the connection globally. It opens the spreadsheet exactly ONCE for the entire office, 
+# completely eliminating the 429 Quota Exceeded error when multiple people type at once.
 @st.cache_resource
-def init_connection():
+def get_worksheets():
     secret_dict = dict(st.secrets["gcp_service_account"])
     client = gspread.service_account_from_dict(secret_dict)
-    return client
+    
+    sh = client.open("Office_Timesheet_App_Data")
+    
+    # We store all tabs in a dictionary so the app never has to search Google Drive again
+    return {
+        "Client_Master": sh.worksheet("Client_Master"),
+        "Task_Master": sh.worksheet("Task_Master"),
+        "Employee_Master": sh.worksheet("Employee_Master"),
+        "Daily_Logs": sh.worksheet("Daily_Logs")
+    }
 
 # --- 2. FETCH MASTER DATA ---
 @st.cache_data(ttl=600)
 def get_master_data():
     try:
-        client = init_connection()
-        sheet = client.open("Office_Timesheet_App_Data")
+        ws = get_worksheets()
         
-        clients_records = sheet.worksheet("Client_Master").get_all_records()
-        tasks_records = sheet.worksheet("Task_Master").get_all_records()
-        emp_records = sheet.worksheet("Employee_Master").get_all_records()
+        # Pulls data from our cached worksheets
+        clients_records = ws["Client_Master"].get_all_records()
+        tasks_records = ws["Task_Master"].get_all_records()
+        emp_records = ws["Employee_Master"].get_all_records()
         
         active_employees = [
             emp for emp in emp_records 
@@ -40,18 +51,15 @@ def get_master_data():
         dummy_emps = [{"Employee_ID": "EMP01", "Full_Name": "Rahul S.", "Password": "1234", "Status": "Active"}]
         return ["ABC Private Limited (DIN: 01234567)"], ["GST Audit"], dummy_emps
 
-# --- NEW: CACHED DUPLICATE CHECK TO FIX 429 ERROR ---
-@st.cache_data(ttl=60) # Caches the result for 60 seconds to stop spamming the API
+# --- 3. CACHED DUPLICATE CHECK ---
+@st.cache_data(ttl=60) 
 def check_submission_status(check_date, emp_name):
     try:
-        client = init_connection()
-        logs_sheet = client.open("Office_Timesheet_App_Data").worksheet("Daily_Logs")
-        
-        # get_all_values() uses 1 single read request instead of multiple
-        all_data = logs_sheet.get_all_values() 
+        ws = get_worksheets()
+        # get_all_values() is highly efficient and grabs the whole sheet in 1 API call
+        all_data = ws["Daily_Logs"].get_all_values() 
         
         for row in all_data:
-            # Matches the date (col 0) and the employee name (col 1)
             if len(row) >= 2 and row[0] == str(check_date) and row[1] == emp_name:
                 return True
         return False
@@ -63,13 +71,15 @@ clients, tasks, employees = get_master_data()
 emp_dict = {f"{emp['Full_Name']} ({emp['Employee_ID']})": str(emp.get('Password', '1234')) for emp in employees}
 emp_names = list(emp_dict.keys())
 
-# --- 3. SESSION STATE INITIALIZATION ---
+# --- 4. SESSION STATE INITIALIZATION ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'current_user' not in st.session_state:
     st.session_state.current_user = ""
 if 'activity_count' not in st.session_state:
     st.session_state.activity_count = 1
+if 'just_submitted' not in st.session_state:
+    st.session_state.just_submitted = False
 
 def add_activity():
     st.session_state.activity_count += 1
@@ -78,7 +88,7 @@ def remove_activity():
     if st.session_state.activity_count > 1:
         st.session_state.activity_count -= 1
 
-# --- 4. LOGIN PORTAL ---
+# --- 5. LOGIN PORTAL ---
 if not st.session_state.logged_in:
     st.title("🔐 Office Portal Login")
     st.write("Please select your name and enter your password to access the tracker.")
@@ -95,11 +105,12 @@ if not st.session_state.logged_in:
                 if emp_password == emp_dict[selected_emp]:
                     st.session_state.logged_in = True
                     st.session_state.current_user = selected_emp
+                    st.session_state.just_submitted = False # Reset submission flag on login
                     st.rerun() 
                 else:
                     st.error("Incorrect Password. Please try again.")
 
-# --- 5. THE MAIN APPLICATION ---
+# --- 6. THE MAIN APPLICATION ---
 else:
     st.sidebar.write(f"👤 Logged in as: **{st.session_state.current_user}**")
     
@@ -112,15 +123,14 @@ else:
             if new_pin and new_pin == confirm_pin:
                 try:
                     emp_id = st.session_state.current_user.split("(")[-1].strip(")")
-                    client = init_connection()
-                    sheet = client.open("Office_Timesheet_App_Data").worksheet("Employee_Master")
+                    ws = get_worksheets()
                     
-                    cell = sheet.find(emp_id)
+                    cell = ws["Employee_Master"].find(emp_id)
                     if cell:
-                        header = sheet.row_values(1)
+                        header = ws["Employee_Master"].row_values(1)
                         if "Password" in header:
                             pwd_col = header.index("Password") + 1
-                            sheet.update_cell(cell.row, pwd_col, new_pin)
+                            ws["Employee_Master"].update_cell(cell.row, pwd_col, new_pin)
                             st.success("PIN updated successfully!")
                             get_master_data.clear() 
                         else:
@@ -140,8 +150,9 @@ else:
 
     date_logged = st.date_input("Select Date", date.today())
     
-    # --- DUPLICATE SUBMISSION CHECK (NOW USING THE CACHED FUNCTION) ---
-    already_submitted = check_submission_status(str(date_logged), st.session_state.current_user)
+    # --- SMART DUPLICATE CHECK ---
+    # Short-circuits the API if they literally just clicked submit in this session
+    already_submitted = st.session_state.just_submitted or check_submission_status(str(date_logged), st.session_state.current_user)
 
     if already_submitted:
         st.success(f"✅ You have already successfully submitted your logs for {date_logged}.")
@@ -228,14 +239,14 @@ else:
                 st.error("Please make sure all tasks have a description, at least one task category selected, and location details if it was a client visit.")
             else:
                 try:
-                    client = init_connection()
-                    sheet = client.open("Office_Timesheet_App_Data").worksheet("Daily_Logs")
-                    sheet.append_rows(logs_to_submit)
+                    ws = get_worksheets()
+                    ws["Daily_Logs"].append_rows(logs_to_submit)
                     
                     st.success("✅ All logs submitted successfully to Google Sheets!")
                     st.balloons()
                     
-                    # Force the app to forget the old submission status so the user immediately sees the success lock screen
+                    # This instantly locks the form without needing another API read request!
+                    st.session_state.just_submitted = True
                     check_submission_status.clear()
                     st.rerun()
                     
