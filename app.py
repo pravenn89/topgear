@@ -4,7 +4,7 @@ import gspread
 from datetime import date
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="Daily Activity Tracker", layout="wide") # Changed to 'wide' to give the dashboard more room
+st.set_page_config(page_title="Daily Activity Tracker", layout="wide") 
 
 # --- 1. GLOBAL GOOGLE SHEETS CONNECTION ---
 @st.cache_resource
@@ -33,6 +33,7 @@ def get_master_data():
             if str(emp.get('Status', 'Active')).strip().lower() == 'active'
         ]
         
+        # Ensures DIN is always provided alongside the client name
         clients_list = [f"{row['Client_Name']} (DIN: {row['DIN']})" if row.get('DIN') else row['Client_Name'] for row in clients_records]
         tasks_list = [row['Task_Category'] for row in tasks_records]
         
@@ -80,7 +81,6 @@ def remove_activity():
 if not st.session_state.logged_in:
     st.title("🔐 Office Portal Login")
     
-    # Created tabs for Employee vs Admin login
     tab1, tab2 = st.tabs(["Employee Login", "Admin Login"])
     
     with tab1:
@@ -110,7 +110,6 @@ if not st.session_state.logged_in:
             submit_admin = st.form_submit_button("Login as Admin", type="primary", use_container_width=True)
             
             if submit_admin:
-                # Change this password to whatever you want your master admin password to be
                 if admin_pass == "admin123": 
                     st.session_state.logged_in = True
                     st.session_state.is_admin = True
@@ -122,6 +121,16 @@ if not st.session_state.logged_in:
 # --- 6. ADMIN DASHBOARD VIEW ---
 elif st.session_state.is_admin:
     st.sidebar.write("👑 **Admin Dashboard**")
+    
+    # --- NEW: Manual Sync Button ---
+    st.sidebar.markdown("---")
+    st.sidebar.write("**Admin Controls**")
+    if st.sidebar.button("🔄 Sync Master Data Now", use_container_width=True):
+        get_master_data.clear()
+        st.sidebar.success("Lists updated successfully!")
+        st.rerun()
+        
+    st.sidebar.markdown("---")
     if st.sidebar.button("Logout", type="secondary"):
         st.session_state.logged_in = False
         st.session_state.is_admin = False
@@ -131,7 +140,6 @@ elif st.session_state.is_admin:
     st.divider()
     
     try:
-        # Fetch the raw data
         ws = get_worksheets()
         records = ws["Daily_Logs"].get_all_records()
         df = pd.DataFrame(records)
@@ -139,11 +147,9 @@ elif st.session_state.is_admin:
         if df.empty:
             st.info("No data has been logged yet.")
         else:
-            # Clean up the data types for analysis
             df['Date'] = pd.to_datetime(df['Date'])
             df['Conveyance_₹'] = pd.to_numeric(df['Conveyance_₹'], errors='coerce').fillna(0)
             
-            # --- DASHBOARD FILTERS ---
             st.subheader("Filter Data")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -151,10 +157,8 @@ elif st.session_state.is_admin:
             with col2:
                 end_date = st.date_input("End Date", df['Date'].max())
             with col3:
-                # Get unique employees from the data
                 emp_filter = st.multiselect("Filter by Employee", options=df['Employee_ID'].unique())
             
-            # Apply filters
             mask = (df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)
             filtered_df = df.loc[mask]
             if emp_filter:
@@ -162,7 +166,6 @@ elif st.session_state.is_admin:
             
             st.markdown("---")
             
-            # --- KEY METRICS ---
             st.subheader("Key Performance Indicators")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Activities Logged", len(filtered_df))
@@ -172,7 +175,6 @@ elif st.session_state.is_admin:
             
             st.markdown("---")
             
-            # --- CHARTS & VISUALS ---
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
@@ -188,11 +190,21 @@ elif st.session_state.is_admin:
                 
             st.markdown("---")
             
-            # --- RAW DATA TABLE ---
+            # --- NEW: Export to Excel/CSV Button ---
             st.subheader("Raw Data View")
-            # Format the date column back to string for clean display
             display_df = filtered_df.copy()
             display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
+            
+            # Convert dataframe to CSV format for download
+            csv_export = display_df.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="📥 Export Filtered Data for Payroll (CSV)",
+                data=csv_export,
+                file_name=f"Timesheet_Export_{start_date}_to_{end_date}.csv",
+                mime="text/csv",
+            )
+            
             st.dataframe(display_df, use_container_width=True)
             
     except Exception as e:
