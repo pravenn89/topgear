@@ -33,7 +33,6 @@ def get_master_data():
             if str(emp.get('Status', 'Active')).strip().lower() == 'active'
         ]
         
-        # Ensures DIN is always provided alongside the client name
         clients_list = [f"{row['Client_Name']} (DIN: {row['DIN']})" if row.get('DIN') else row['Client_Name'] for row in clients_records]
         tasks_list = [row['Task_Category'] for row in tasks_records]
         
@@ -122,7 +121,6 @@ if not st.session_state.logged_in:
 elif st.session_state.is_admin:
     st.sidebar.write("👑 **Admin Dashboard**")
     
-    # --- NEW: Manual Sync Button ---
     st.sidebar.markdown("---")
     st.sidebar.write("**Admin Controls**")
     if st.sidebar.button("🔄 Sync Master Data Now", use_container_width=True):
@@ -151,18 +149,25 @@ elif st.session_state.is_admin:
             df['Conveyance_₹'] = pd.to_numeric(df['Conveyance_₹'], errors='coerce').fillna(0)
             
             st.subheader("Filter Data")
-            col1, col2, col3 = st.columns(3)
+            # --- NEW: Changed to 4 columns to include Client Filter ---
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 start_date = st.date_input("Start Date", df['Date'].min())
             with col2:
                 end_date = st.date_input("End Date", df['Date'].max())
             with col3:
                 emp_filter = st.multiselect("Filter by Employee", options=df['Employee_ID'].unique())
+            with col4:
+                client_filter = st.multiselect("Filter by Client", options=df['Client_ID'].unique())
             
+            # --- NEW: Apply both Employee and Client filters ---
             mask = (df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)
             filtered_df = df.loc[mask]
+            
             if emp_filter:
                 filtered_df = filtered_df[filtered_df['Employee_ID'].isin(emp_filter)]
+            if client_filter:
+                filtered_df = filtered_df[filtered_df['Client_ID'].isin(client_filter)]
             
             st.markdown("---")
             
@@ -190,12 +195,10 @@ elif st.session_state.is_admin:
                 
             st.markdown("---")
             
-            # --- NEW: Export to Excel/CSV Button ---
             st.subheader("Raw Data View")
             display_df = filtered_df.copy()
             display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
             
-            # Convert dataframe to CSV format for download
             csv_export = display_df.to_csv(index=False).encode('utf-8')
             
             st.download_button(
