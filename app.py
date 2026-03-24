@@ -175,22 +175,28 @@ elif st.session_state.is_admin:
                 st.warning(f"⚠️ {len(active_sessions)} employee(s) missed their Punch OUT.")
                 
                 with st.form("admin_override_form"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        options = [f"{row['Employee_ID']} (Date: {row['Date']})" for _, row in active_sessions.iterrows()]
-                        selected_session = st.selectbox("Select Open Timesheet", options)
-                    with col2:
-                        override_time = st.time_input("Set Manual Out Time")
+                    options = [f"{row['Employee_ID']} (Date: {row['Date']})" for _, row in active_sessions.iterrows()]
+                    selected_session = st.selectbox("Select Open Timesheet", options)
+                    
+                    # --- NEW: Custom 24-Hour Scrollable Time Selectors ---
+                    st.write("**Set Manual Out Time (24-Hour Format)**")
+                    col_h, col_m = st.columns(2)
+                    with col_h:
+                        selected_hr = st.selectbox("Hour (00-23)", [f"{i:02d}" for i in range(24)])
+                    with col_m:
+                        selected_min = st.selectbox("Minute (00-59)", [f"{i:02d}" for i in range(60)])
                     
                     if st.form_submit_button("Force Punch OUT", type="primary"):
                         selected_idx = options.index(selected_session)
                         target_row = active_sessions.iloc[selected_idx]
                         target_emp = target_row['Employee_ID']
                         target_date = target_row['Date']
-                        formatted_time = override_time.strftime("%H:%M")
+                        
+                        # Combines the select boxes into the exact format your sheet uses
+                        formatted_time = f"{selected_hr}:{selected_min}"
                         
                         punch_out(target_date, target_emp, formatted_time, "Admin Override (Manual)")
-                        st.success(f"Successfully punched out {target_emp} for {target_date}.")
+                        st.success(f"Successfully punched out {target_emp} for {target_date} at {formatted_time}.")
                         st.rerun()
             else:
                 st.success("✅ All employees have successfully punched out! No overrides needed.")
@@ -224,7 +230,6 @@ elif st.session_state.is_admin:
             m4.metric("Unique Clients", filtered_df['Client_ID'].nunique())
             m5.metric("Active Employees", filtered_df['Employee_ID'].nunique())
             
-            # --- NEW: BILLING & PRODUCTIVITY REPORTS ---
             st.markdown("---")
             st.subheader("📈 Billing & Productivity Reports")
             
@@ -239,7 +244,6 @@ elif st.session_state.is_admin:
             with report_col2:
                 st.write("**Total Hours by Task Category**")
                 if not filtered_df.empty:
-                    # Explode comma-separated tasks to ensure multi-task entries are tracked properly
                     expanded_tasks = filtered_df.assign(Single_Task=filtered_df['Tasks'].str.split(', ')).explode('Single_Task')
                     task_hours = (expanded_tasks.groupby('Single_Task')['Time_Spent_Mins'].sum() / 60).reset_index()
                     task_hours.rename(columns={'Time_Spent_Mins': 'Hours'}, inplace=True)
