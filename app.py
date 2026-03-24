@@ -165,12 +165,10 @@ elif st.session_state.is_admin:
             st.dataframe(att_df[att_df['Date'] == str(date.today())], use_container_width=True)
         else: st.info("No attendance records yet.")
         
-        # --- NEW: ADMIN OVERRIDES ---
         st.markdown("---")
         st.subheader("🛠️ Admin Overrides (Manual Punch Out)")
         
         if not att_df.empty:
-            # Find rows where Daily_Out_Time is completely blank
             active_sessions = att_df[att_df['Daily_Out_Time'].astype(str).str.strip() == ""]
             
             if not active_sessions.empty:
@@ -179,7 +177,6 @@ elif st.session_state.is_admin:
                 with st.form("admin_override_form"):
                     col1, col2 = st.columns(2)
                     with col1:
-                        # Build a list of open shifts
                         options = [f"{row['Employee_ID']} (Date: {row['Date']})" for _, row in active_sessions.iterrows()]
                         selected_session = st.selectbox("Select Open Timesheet", options)
                     with col2:
@@ -190,10 +187,8 @@ elif st.session_state.is_admin:
                         target_row = active_sessions.iloc[selected_idx]
                         target_emp = target_row['Employee_ID']
                         target_date = target_row['Date']
-                        
                         formatted_time = override_time.strftime("%H:%M")
                         
-                        # Punch them out securely using the admin tag
                         punch_out(target_date, target_emp, formatted_time, "Admin Override (Manual)")
                         st.success(f"Successfully punched out {target_emp} for {target_date}.")
                         st.rerun()
@@ -204,7 +199,8 @@ elif st.session_state.is_admin:
         
         if not log_df.empty:
             log_df['Date'] = pd.to_datetime(log_df['Date'])
-            log_df['Conveyance_₹'] = pd.to_numeric(log_df['Conveyance_₹'], errors='coerce').fillna(0)
+            log_df['Conveyance_₹'] = pd.to_numeric(log_df.get('Conveyance_₹', 0), errors='coerce').fillna(0)
+            log_df['Time_Spent_Mins'] = pd.to_numeric(log_df.get('Time_Spent_Mins', 0), errors='coerce').fillna(0)
             
             st.subheader("Filter Task Data")
             col1, col2, col3, col4 = st.columns(4)
@@ -219,9 +215,68 @@ elif st.session_state.is_admin:
             if client_filter: filtered_df = filtered_df[filtered_df['Client_ID'].isin(client_filter)]
             
             st.markdown("---")
+            total_hours = filtered_df['Time_Spent_Mins'].sum() / 60
+            
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total Activities", len(filtered_df))
+            m2.metric("Total Hours Logged", f"{total_hours:.1f} hrs")
+            m3.metric("Total Conveyance", f"₹{filtered_df['Conveyance_₹'].sum():.2f}")
+            m4.metric("Unique Clients", filtered_df['Client_ID'].nunique())
+            m5.metric("Active Employees", filtered_df['Employee_ID'].nunique())
+            
+            # --- NEW: BILLING & PRODUCTIVITY REPORTS ---
+            st.markdown("---")
+            st.subheader("📈 Billing & Productivity Reports")
+            
+            report_col1, report_col2 = st.columns(2)
+            
+            with report_col1:
+                st.write("**Total Hours by Client**")
+                client_hours = (filtered_df.groupby('Client_ID')['Time_Spent_Mins'].sum() / 60).reset_index()
+                client_hours.rename(columns={'Time_Spent_Mins': 'Hours'}, inplace=True)
+                if not client_hours.empty: st.bar_chart(client_hours, x='Client_ID', y='Hours')
+                
+            with report_col2:
+                st.write("**Total Hours by Task Category**")
+                if not filtered_df.empty:
+                    # Explode comma-separated tasks to ensure multi-task entries are tracked properly
+                    expanded_tasks = filtered_df.assign(Single_Task=filtered_df['Tasks'].str.split(', ')).explode('Single_Task')
+                    task_hours = (expanded_tasks.groupby('Single_Task')['Time_Spent_Mins'].sum() / 60).reset_index()
+                    task_hours.rename(columns={'Time_Spent_Mins': 'Hours'}, inplace=True)
+                    st.bar_chart(task_hours, x='Single_Task', y='Hours')
+            
+            st.markdown("---")
+            
+            col_chart1, col_chart2, col_chart3 = st.columns(3)
+            with col_chart1:
+                st.write("**Hours Logged by Employee**")
+                time_by_emp = (filtered_df.groupby('Employee_ID')['Time_Spent_Mins'].sum() / 60).reset_index()
+                time_by_emp.rename(columns={'Time_Spent_Mins': 'Hours'}, inplace=True)
+                if not time_by_emp.empty: st.bar_chart(time_by_emp, x='Employee_ID', y='Hours')
+            
+            with col_chart2:
+                st.write("**Conveyance by Employee**")
+                conv_by_emp = filtered_df.groupby('Employee_ID')['Conveyance_₹'].sum().reset_index()
+                if not conv_by_emp.empty: st.bar_chart(conv_by_emp, x='Employee_ID', y='Conveyance_₹')
+                
+            with col_chart3:
+                st.write("**Work Location Breakdown**")
+                loc_counts = filtered_df['Work_Location'].value_counts()
+                st.bar_chart(loc_counts)
+            
+            st.markdown("---")
             st.subheader("Raw Data View")
             display_df = filtered_df.copy()
             display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
+            
+            csv_export = display_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Export Filtered Data for Payroll (CSV)",
+                data=csv_export,
+                file_name=f"Timesheet_Export_{start_date}_to_{end_date}.csv",
+                mime="text/csv",
+            )
+            
             st.dataframe(display_df, use_container_width=True)
             
     except Exception as e: st.error(f"Error loading dashboard: {e}")
@@ -293,14 +348,19 @@ else:
             c_client = st.selectbox("Select Client for this Task", clients)
             c_tasks = st.multiselect("Select Task(s) Performed", tasks)
             c_desc = st.text_area("Detailed Task Description")
-            c_conv = st.number_input("Conveyance Claimed for this task (₹)", min_value=0)
+            
+            col_dur, col_conv = st.columns(2)
+            with col_dur:
+                c_time = st.number_input("Time Spent on Task (in minutes)", min_value=1, step=5, value=30)
+            with col_conv:
+                c_conv = st.number_input("Conveyance Claimed for this task (₹)", min_value=0)
                 
             if st.button("➕ Submit Task", type="primary"):
                 if not c_tasks or not c_desc:
                     st.error("Tasks and Description are required.")
                 else:
                     tasks_string = ", ".join(c_tasks)
-                    row_data = [str(current_date), st.session_state.current_user, "-", "-", in_type, c_client, tasks_string, c_desc, in_loc, c_conv]
+                    row_data = [str(current_date), st.session_state.current_user, "-", "-", in_type, c_client, tasks_string, c_desc, in_loc, c_conv, c_time]
                     get_worksheets()["Daily_Logs"].append_row(row_data)
                     st.success("Task Logged Successfully!")
                     st.rerun()
