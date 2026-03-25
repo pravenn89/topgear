@@ -159,11 +159,39 @@ elif st.session_state.is_admin:
         att_df = pd.DataFrame(ws["Attendance_Log"].get_all_records())
         log_df = pd.DataFrame(ws["Daily_Logs"].get_all_records())
         
-        st.subheader("🏢 Live Attendance (Today)")
+        # --- NEW: SIDE-BY-SIDE ATTENDANCE TRACKER ---
+        st.subheader("🏢 Daily Attendance Overview")
+        
+        today_str = str(date.today())
         if not att_df.empty:
             att_df['Date'] = att_df['Date'].astype(str)
-            st.dataframe(att_df[att_df['Date'] == str(date.today())], use_container_width=True)
-        else: st.info("No attendance records yet.")
+            today_att = att_df[att_df['Date'] == today_str]
+            punched_in_emps = today_att['Employee_ID'].tolist() if not today_att.empty else []
+        else:
+            today_att = pd.DataFrame()
+            punched_in_emps = []
+            
+        # Find employees in the master list who are NOT in today's attendance log
+        missing_emps = [emp for emp in emp_names if emp not in punched_in_emps]
+        
+        col_in, col_missing = st.columns(2)
+        
+        with col_in:
+            st.markdown("### ✅ Punched In")
+            if not today_att.empty:
+                # Show a clean view of who is here and where they are
+                display_att = today_att[['Employee_ID', 'Daily_In_Time', 'Punch_In_Type', 'Daily_Out_Time']]
+                st.dataframe(display_att, use_container_width=True, hide_index=True)
+            else: 
+                st.info("No one has punched in yet today.")
+                
+        with col_missing:
+            st.markdown(f"### ❌ Not Punched In ({len(missing_emps)})")
+            if missing_emps:
+                missing_df = pd.DataFrame(missing_emps, columns=["Missing Employees"])
+                st.dataframe(missing_df, use_container_width=True, hide_index=True)
+            else:
+                st.success("Everyone is accounted for today!")
         
         st.markdown("---")
         st.subheader("🛠️ Admin Overrides (Manual Punch Out)")
@@ -172,13 +200,12 @@ elif st.session_state.is_admin:
             active_sessions = att_df[att_df['Daily_Out_Time'].astype(str).str.strip() == ""]
             
             if not active_sessions.empty:
-                st.warning(f"⚠️ {len(active_sessions)} employee(s) missed their Punch OUT.")
+                st.warning(f"⚠️ {len(active_sessions)} employee(s) currently have open shifts.")
                 
                 with st.form("admin_override_form"):
                     options = [f"{row['Employee_ID']} (Date: {row['Date']})" for _, row in active_sessions.iterrows()]
                     selected_session = st.selectbox("Select Open Timesheet", options)
                     
-                    # --- NEW: Custom 24-Hour Scrollable Time Selectors ---
                     st.write("**Set Manual Out Time (24-Hour Format)**")
                     col_h, col_m = st.columns(2)
                     with col_h:
@@ -192,14 +219,12 @@ elif st.session_state.is_admin:
                         target_emp = target_row['Employee_ID']
                         target_date = target_row['Date']
                         
-                        # Combines the select boxes into the exact format your sheet uses
                         formatted_time = f"{selected_hr}:{selected_min}"
-                        
                         punch_out(target_date, target_emp, formatted_time, "Admin Override (Manual)")
                         st.success(f"Successfully punched out {target_emp} for {target_date} at {formatted_time}.")
                         st.rerun()
             else:
-                st.success("✅ All employees have successfully punched out! No overrides needed.")
+                st.success("✅ All active shifts have been securely closed.")
             
         st.markdown("---")
         
