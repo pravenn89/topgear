@@ -68,7 +68,8 @@ def get_master_data():
             
     return clients_list, tasks_list, active_employees, client_coords
 
-# --- ATTENDANCE ENGINE ---
+# --- ATTENDANCE ENGINE (NOW CACHED TO PREVENT CRASHES) ---
+@st.cache_data(ttl=60)
 def get_attendance_status(check_date, emp_name):
     ws = get_worksheets()
     records = ws["Attendance_Log"].get_all_values() 
@@ -86,6 +87,7 @@ def get_attendance_status(check_date, emp_name):
 def punch_in(check_date, emp_name, in_time, in_type, in_loc):
     ws = get_worksheets()
     ws["Attendance_Log"].append_row([str(check_date), emp_name, in_time, "", in_type, in_loc, ""])
+    get_attendance_status.clear() # Instantly refreshes screen
 
 def punch_out(check_date, emp_name, out_time, out_loc):
     ws = get_worksheets()
@@ -95,7 +97,9 @@ def punch_out(check_date, emp_name, out_time, out_loc):
             ws["Attendance_Log"].update_cell(i + 1, 4, out_time) 
             ws["Attendance_Log"].update_cell(i + 1, 7, out_loc)  
             break
+    get_attendance_status.clear() # Instantly refreshes screen
 
+@st.cache_data(ttl=60)
 def get_todays_tasks(check_date, emp_name):
     ws = get_worksheets()
     records = ws["Daily_Logs"].get_all_records()
@@ -159,7 +163,6 @@ elif st.session_state.is_admin:
         att_df = pd.DataFrame(ws["Attendance_Log"].get_all_records())
         log_df = pd.DataFrame(ws["Daily_Logs"].get_all_records())
         
-        # --- NEW: SIDE-BY-SIDE ATTENDANCE TRACKER ---
         st.subheader("🏢 Daily Attendance Overview")
         
         today_str = str(date.today())
@@ -171,7 +174,6 @@ elif st.session_state.is_admin:
             today_att = pd.DataFrame()
             punched_in_emps = []
             
-        # Find employees in the master list who are NOT in today's attendance log
         missing_emps = [emp for emp in emp_names if emp not in punched_in_emps]
         
         col_in, col_missing = st.columns(2)
@@ -179,7 +181,6 @@ elif st.session_state.is_admin:
         with col_in:
             st.markdown("### ✅ Punched In")
             if not today_att.empty:
-                # Show a clean view of who is here and where they are
                 display_att = today_att[['Employee_ID', 'Daily_In_Time', 'Punch_In_Type', 'Daily_Out_Time']]
                 st.dataframe(display_att, use_container_width=True, hide_index=True)
             else: 
@@ -392,6 +393,7 @@ else:
                     row_data = [str(current_date), st.session_state.current_user, "-", "-", in_type, c_client, tasks_string, c_desc, in_loc, c_conv, c_time]
                     get_worksheets()["Daily_Logs"].append_row(row_data)
                     st.success("Task Logged Successfully!")
+                    get_todays_tasks.clear() # Instantly refreshes task table
                     st.rerun()
 
         st.subheader("📋 Your Tasks Today")
